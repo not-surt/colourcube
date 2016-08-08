@@ -1,0 +1,955 @@
+﻿<!--
+/* This program is free software. It comes without any warranty, to
+* the extent permitted by applicable law. You can redistribute it
+* and/or modify it under the terms of the Do What The Fuck You Want
+* To Public License, Version 2, as published by Sam Hocevar. See
+* http://sam.zoy.org/wtfpl/COPYING for more details. */
+
+          DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+                  Version 2, December 2004
+
+Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
+
+Everyone is permitted to copy and distribute verbatim or modified
+copies of this license document, and changing it is allowed as long
+as the name is changed.
+
+          DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+  TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+0. You just DO WHAT THE FUCK YOU WANT TO.
+-->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <script type="application/javascript">
+      "use strict";
+      
+      function bias(bias, value) {
+        if (bias == 0.0) return 0.0;
+        return value / ((((1.0 / bias) - 2.0) * (1.0 - value)) + 1.0);
+      }
+
+      function gain(gain, value) {
+        if(value < 0.5)
+          return bias(gain, value * 2.0) / 2.0;
+        else
+          return bias(1.0 - gain, value * 2.0 - 1.0) / 2.0 + 0.5;
+      }
+      
+      Number.prototype.clamp = function(min, max) {
+        return Math.min(Math.max(this, min), max);
+      };
+           
+      function callAsynchronous(func, callback) {
+        setTimeout(function() {
+          func();
+          if (callback)
+            callback();
+        }, 0);
+      }
+      
+      function lookupFromArray(array, key) {
+        var object = {};
+        for (var i = 0; i < array.length; i++) {
+          object[array[i][key]] = array[i];
+        }
+        return object;
+      }
+      
+      function hsvToRgb(h, s, v){
+        var i = Math.floor(h * 6);
+        var f = h * 6 - i;
+        
+        v *= 255;
+        var p = v * (1 - s);
+        var q = v * (1 - f * s);
+        var t = v * (1 - (1 - f) * s);
+
+        switch (i % 6) {
+          case 0: return [v, t, p];
+          case 1: return [q, v, p];
+          case 2: return [p, v, t];
+          case 3: return [p, q, v];
+          case 4: return [t, p, v];
+          case 5: return [v, p, q];
+        }
+      }
+
+      function hueTorgb(p, q, t){
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1 / 6) return p + (q - p) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+      }
+
+      function hslToRgb(h, s, l) {
+        if (s == 0) {
+          var grey = l * 255;
+          return [grey, grey, grey];
+        }
+        else {
+          var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+          var p = 2 * l - q;
+          return [
+            hueTorgb(p, q, h + 1 / 3) * 255,
+            hueTorgb(p, q, h) * 255,
+            hueTorgb(p, q, h - 1 / 3) * 255,
+          ];
+        }
+      }
+
+      function ycbcrToRgb(y, cb, cr) {
+        return [
+          (y + 1.403 * cr) * 255,
+          (y - 0.344 * cb - 0.714 * cr) * 255,
+          (y + 1.773 * cb) * 255,
+        ];
+      }
+        
+      /*function cmykToRgb(c, m, y, k) {
+        var weight = 1.0 - k;
+        return [
+          weight * (1.0 - c) * 255,
+          weight * (1.0 - m) * 255,
+          weight * (1.0 - y) * 255,
+        ];        
+      }*/
+      
+      var COLOUR_SPACES = [
+        {
+          key: "rgb",
+          label: "RGB",
+          components: [
+            { symbol: "R", label: "Red", labelColour: "red", range: [0, 255] },
+            { symbol: "G", label: "Green", labelColour: "lime", range: [0, 255] },
+            { symbol: "B", label: "Blue", labelColour: "blue", range: [0, 255] },
+          ],
+          func: function (components) { return components; },
+        },
+        {
+          key: "rgbi",
+          label: "RGBI",
+          components: [
+            { symbol: "R", label: "Red", labelColour: "red", range: [0, 255] },
+            { symbol: "G", label: "Green", labelColour: "lime", range: [0, 255] },
+            { symbol: "B", label: "Blue", labelColour: "blue", range: [0, 255] },
+            { symbol: "I", label: "Intensity", labelColour: "white", range: [0, 255] },
+          ],
+          func: function (components) { return [(components[0] / 255.0) * components[3], (components[1]/ 255.0) * components[3], (components[2]/ 255.0) * components[3]]; },
+        },
+        {
+          key: "hsv",
+          label: "HSV",
+          components: [
+            { symbol: "H", label: "Hue", range: [0.0, 360.0] },
+            { symbol: "S", label: "Saturation", range: [0.0, 1.0], step: 0.05 },
+            { symbol: "V", label: "Value", range: [0.0, 1.0], step: 0.05 },
+          ],
+          func: function (components) {
+            return hsvToRgb(components[0] / 360.0, components[1], components[2]);
+          },
+        },
+        {
+          key: "hsl",
+          label: "HSL",
+          components: [
+            { symbol: "H", label: "Hue", range: [0.0, 360.0] },
+            { symbol: "S", label: "Saturation", range: [0.0, 1.0], step: 0.05 },
+            { symbol: "L", label: "Lightness", range: [0.0, 1.0], step: 0.05 },
+          ],
+          func: function (components) {
+            return hslToRgb(components[0] / 360.0, components[1], components[2]);
+          },
+        },
+        {
+          key: "ycbcr",
+          label: "YCbCr",
+          components: [
+            { symbol: "Y", label: "Luma", range: [0.0, 360.0] },
+            { symbol: "Cb", label: "Chroma (Blue)", range: [-0.5, 0.5], step: 0.05 },
+            { symbol: "Cr", label: "Chroma (Red)", range: [-0.5, 0.5], step: 0.05 },
+          ],
+          func: function (components) {
+            return ycbcrToRgb(components[0] / 360.0, components[1], components[2]);
+          },
+        },
+        /*{
+          key: "cmyk",
+          label: "CMYK",
+          components: [
+            { symbol: "C", label: "Cyan", labelColour: "aqua", range: [0.0, 1.0], step: 0.05 },
+            { symbol: "M", label: "Magenta", labelColour: "fuchsia", range: [0.0, 1.0], step: 0.05 },
+            { symbol: "Y", label: "Yellow", labelColour: "yellow", range: [0.0, 1.0], step: 0.05 },
+            { symbol: "K", label: "Black", labelColour: "black", range: [0.0, 1.0], step: 0.05 },
+          ],
+          func: function (components) {
+            return cmykToRgb(components[0], components[1], components[2], components[3]);
+          },
+        },*/
+        {
+          key: "intensity",
+          label: "Intensity",
+          components: [
+            { symbol: "I", label: "Intensity", range: [0, 255] },
+          ],
+          func: function (components) { return [components[0], components[0], components[0]]; },
+        }
+      ];
+      var COLOUR_SPACES_LOOKUP = lookupFromArray(COLOUR_SPACES, "key");
+      
+      var CANVAS_SIZE_MAX = 1024;
+      
+      function setLevelsMode(component, mode) {
+        mode = mode.toLowerCase();
+        var fields = document.getElementById("fields" + component.symbol);
+        
+        while (fields.hasChildNodes()) {
+          fields.removeChild(fields.lastChild);
+        }
+        
+        var array = [], field;
+        switch (mode) {
+          case "bits": {
+            field = array[array.push(document.createElement("input")) - 1];          
+            field.id = "bits" + component.symbol;
+            field.title = "Number of bits for levels"
+            field.type = "number";
+            field.setAttribute("list", "bitSizes");
+            field.length = 1;
+            field.min = 0;
+            field.max = 8;
+            field.value = getParameter(field.id, 2);
+          } break;
+          case "levels": {
+            field = array[array.push(document.createElement("input")) - 1];          
+            field.id = "levels" + component.symbol;
+            field.title = "Number of levels"
+            field.type = "number";
+            field.length = 3;
+            field.min = 1;
+            field.max = 256;
+            field.value = getParameter(field.id, 4);
+          } break;
+          case "step": {
+            field = array[array.push(document.createElement("input")) - 1];          
+            field.id = "offset" + component.symbol;
+            field.title = "Starting offset"
+            field.type = "number";
+            field.length = 3;
+            field.min = -component.range[1];
+            field.max = component.range[1];
+            if (typeof(component.step) !== "undefined") {
+              field.step = component.step;
+            }
+            field.value = getParameter(field.id, component.range[0]);
+            
+            field = array[array.push(document.createElement("input")) - 1];          
+            field.id = "step" + component.symbol;
+            field.title = "Step size"
+            field.type = "number";
+            field.length = 3;
+            field.min = component.range[0];
+            field.max = component.range[1];
+            if (typeof(component.step) !== "undefined") {
+              field.step = component.step;
+            }
+            var steps = 4;
+            var step = (component.range[1] - component.range[0]) / steps;
+            field.value = getParameter(field.id, step);
+
+            field = array[array.push(document.createElement("input")) - 1];          
+            field.id = "steps" + component.symbol;
+            field.title = "Number of steps"
+            field.type = "number";
+            field.length = 3;
+            field.min = 1;
+            field.value = getParameter(field.id, steps);
+          } break;
+          case "custom": {
+            field = array[array.push(document.createElement("textarea")) - 1];          
+            field.id = "custom" + component.symbol;
+            field.title = "Custom levels"
+            field.cols = 16;
+            field.rows = 1;
+            var steps = 4;
+            var step = (component.range[1] - component.range[0]) / steps;
+            var value = [];
+            for (var i = 0; i <= steps; i++) {
+              value.push(component.range[0] + i * step);
+            }
+            field.value = getParameter(field.id, value.join(","));
+          } break;
+        }
+        for (var i = 0; i < array.length; i++) {
+          array[i].addEventListener("input", updateValueEvent);
+          fields.appendChild(array[i]);
+        }
+        switch (mode) {
+          case "bits":
+          case "levels": {
+            var select = document.createElement("select");          
+            select.id = "mapping" + component.symbol;
+            select.title = "Select level value range mapping";
+            var options = [["stretch", "Stretch"], ["clipUpper", "Clip Upper"], ["clipLower", "Clip Lower"], ["centre", "Centre"]];
+            for (var j = 0; j < options.length; j++) {
+              var option = document.createElement("option");    
+              option.value = options[j][0];
+              option.textContent = options[j][1];
+              select.appendChild(option);
+            }
+            select.value = getParameter(select.id, select.value);
+            fields.appendChild(select);
+            select.addEventListener("change", updateValueEvent);
+          } break;
+        }
+      }
+      
+      function setColourSpace(space) {
+        var ordering = document.getElementById("ordering");
+        while (ordering.hasChildNodes()) {
+          ordering.removeChild(ordering.lastChild);
+        }
+        for (var i = 0; i < COLOUR_SPACES_LOOKUP[space].components.length; i++) {
+          var select = document.createElement("select");          
+          select.id = "ordering" + COLOUR_SPACES_LOOKUP[space].label + i;
+          select.title = "Select component order";
+          var option = document.createElement("option");    
+          option.value = -1;
+          option.textContent = "-";
+          select.appendChild(option);
+          for (var j = 0; j < COLOUR_SPACES_LOOKUP[space].components.length; j++) {
+            var component = COLOUR_SPACES_LOOKUP[space].components[j];
+            var option = document.createElement("option");    
+            option.value = j;
+            option.textContent = component.symbol;
+            select.appendChild(option);
+          }
+          select.value = getParameter(select.id, i);
+          ordering.appendChild(select);
+          select.addEventListener("change", updateValueEvent);
+        }
+        
+        var fieldset = document.getElementById("levels");
+        for (var i = fieldset.childNodes.length - 1; i >= 0 ; i--) {
+          if(fieldset.childNodes[i].tagName != "LEGEND") {
+            fieldset.removeChild(fieldset.childNodes[i]);
+          }
+        }
+        
+        for (var i = 0; i < COLOUR_SPACES_LOOKUP[space].components.length; i++) {
+          var component = COLOUR_SPACES_LOOKUP[space].components[i];
+
+          var line = document.createElement("div");
+          fieldset.appendChild(line);
+            
+          var label = document.createElement("label");          
+          if (typeof(component.labelColour) !== "undefined") {
+            label.style.color = component.labelColour;
+          }
+          label.textContent = component.label;
+          line.appendChild(label);
+          var select = document.createElement("select");          
+          select.id = "mode" + component.symbol;
+          select.title = "Select levels mode";
+          label.htmlFor = select.id;
+          var options = [["bits", "Bits"], ["levels", "Levels"], ["step", "Step"], ["custom", "Custom"]];
+          for (var j = 0; j < options.length; j++) {
+            var option = document.createElement("option");    
+            option.value = options[j][0];
+            option.textContent = options[j][1];
+            select.appendChild(option);
+          }
+          select.value = getParameter(select.id, "bits");
+          line.appendChild(select);
+          select.addEventListener("change", (function (component, event) { parameters[event.target.id] = event.target.value; setLevelsMode(component, event.target.value); update(true); }).bind(select, component));
+
+          var fields = document.createElement("div");
+          fields.id = "fields" + component.symbol;
+          line.appendChild(fields);
+
+          var label = document.createElement("label");          
+          label.textContent = "Gain";
+          line.appendChild(label);
+          var range = document.createElement("input");          
+          range.id = "gain" + component.symbol;
+          range.title = "Adjust gain";
+          range.type = "range";
+          range.min = 0.0;
+          range.max = 1.0;
+          range.step = 0.05;
+          range.value = getParameter(range.id, 0.5);
+          line.appendChild(range);
+          label.htmlFor = range.id;
+          range.addEventListener("input", updateValueEvent);
+
+          var label = document.createElement("label");          
+          label.textContent = "Bias";
+          line.appendChild(label);
+          var range = document.createElement("input");          
+          range.id = "bias" + component.symbol;
+          range.title = "Adjust bias";
+          range.type = "range";
+          range.min = 0.0;
+          range.max = 1.0;
+          range.step = 0.05;
+          range.value = getParameter(range.id, 0.5);
+          line.appendChild(range);
+          label.htmlFor = range.id;
+          range.addEventListener("input", updateValueEvent);
+
+          var label = document.createElement("label");          
+          label.textContent = "Reverse";
+          line.appendChild(label);
+          var checkbox = document.createElement("input");          
+          checkbox.id = "reverse" + component.symbol;
+          checkbox.title = "Reverse order of levels";
+          checkbox.type = "checkbox";
+          checkbox.checked = (getParameter(checkbox.id, "false").toLowerCase() == "true");
+          line.appendChild(checkbox);
+          label.htmlFor = checkbox.id;
+          checkbox.addEventListener("change", updateCheckedEvent);
+          
+          setLevelsMode(component, select.value);
+        }
+      }
+
+      function parseQueryString(uri) {
+        var parameters = {};
+        var query = (uri ? uri.split("#")[0].split("?")[1] : window.location.search.split("?")[1]);
+        if(query && query.length > 0) {
+          var tokens = query.split("&");
+          for(var i in tokens) {
+            if (tokens[i] != "")  {
+              var temp = tokens[i].split("=");
+              if (temp[0] != "" && temp[1] && temp[1] != "") {
+                var values = temp[1] && temp[1].split(",");
+                parameters[temp[0]] = !values || values.length > 1 ? values : values[0];
+              }
+            }
+          }
+        }
+        return parameters;
+      }
+      
+      function setQueryString(parameters) {
+        var queryString = "";
+        var first = true;
+        for (var key in parameters) {
+          if (first) {
+            first = false;
+          }
+          else {
+            queryString += "&";
+          }
+          queryString += key + "=";
+          if (Array.isArray(parameters[key]) && parameters[key].length > 0) {
+            queryString += parameters[key].join(",");
+          }
+          else {
+            queryString += parameters[key];
+          }
+        }
+        history.replaceState(null, null, "?" + queryString);
+      }
+      
+      function getParameter(parameter, defaultValue) {
+        if (typeof(parameters[parameter]) !== "undefined") {
+          return parameters[parameter];
+        }
+        else if (typeof(defaultValue) !== "undefined") {
+          return parameters[parameter] = defaultValue;
+        }
+        else return null;
+      }
+      
+      function buildGplString(palette, columns) {
+        if (typeof(columns) === "undefined") columns = 1;
+        var name = "Colour Cube";
+        var text = "";
+        text += "GIMP Palette\n";
+        text += "Name: " + name + "\n";
+        text += "Columns: " + columns + "\n";
+        text += "#\n";
+        for (var i = 0; i < palette.length; i++) {
+          text += palette[i][0] + " " + palette[i][1] + " " + palette[i][2] + "\t" + "Index " + i + "\n";
+        }
+        return text;
+      }
+
+      function buildPalString(palette, columns) {
+        var length = palette.length <= 16 ? 16 : 256;
+        var text = "";
+        text += "JASC-PAL\n";
+        text += "0100\n";
+        text += length + "\n";
+        for (var i = 0; i < length; i++) {
+          if (i < palette.length) {
+            text += palette[i][0] + " " + palette[i][1] + " " + palette[i][2] + "\n";
+          }
+          else {
+            text += "0 0 0\n";
+          }
+        }
+        return text;
+      }
+      
+      function buildTextDataUrl(text) {
+        return "data:text/plain;charset=US-ASCII;base64," + btoa(text);
+      }
+
+      var renderQueue = [];
+      var parameters = {};
+      
+      function updateValueEvent(event) {
+        parameters[event.target.id] = event.target.value.replace(/\s/g, "");
+        update(true);
+      }
+
+      function updateCheckedEvent(event) {
+        parameters[event.target.id] = event.target.checked.toString();
+        update(true);
+      }
+      
+      function resetAll() {
+        window.location.assign(window.location.pathname);
+      }
+
+      function init() {
+        parameters = parseQueryString();
+        var select = document.getElementById("space");
+
+        for (var i = 0; i < COLOUR_SPACES.length; i++) {
+          var option = document.createElement("option");
+          option.text = COLOUR_SPACES[i].label;
+          option.value = COLOUR_SPACES[i].key;
+          if (i == 0) option.selected = true;
+          select.appendChild(option);
+        }
+        select.addEventListener("change", function (event) { parameters[event.target.id] = event.target.value; setColourSpace(event.target.value); update(true); });
+        select.value = getParameter("space", select.value);
+        setColourSpace(select.value);
+
+        var swatchSizeW = document.getElementById("swatchSizeW");
+        swatchSizeW.addEventListener("input", updateValueEvent);
+        swatchSizeW.value = getParameter("swatchSizeW", swatchSizeW.value);
+        var swatchSizeH = document.getElementById("swatchSizeH");
+        swatchSizeH.addEventListener("input", updateValueEvent);
+        swatchSizeH.value = getParameter("swatchSizeH", swatchSizeH.value);
+
+        var wrap = document.getElementById("wrap");
+        wrap.addEventListener("input", updateValueEvent);
+        wrap.value = getParameter("wrap", wrap.value);
+
+        var autoUpdate = document.getElementById("autoUpdate");
+        autoUpdate.addEventListener("change", updateCheckedEvent);
+        autoUpdate.checked = (getParameter("autoUpdate", autoUpdate.checked.toString()).toLowerCase() == "true");
+      }
+      
+      function update(isAutoUpdate) {
+        if (typeof(isAutoUpdate) !== "undefined" &&  isAutoUpdate && !document.getElementById("autoUpdate").checked) return;
+        document.getElementById("downloadPng").removeAttribute("href");
+        document.getElementById("downloadGpl").removeAttribute("href");
+        document.getElementById("downloadPal").removeAttribute("href");
+        var space = document.getElementById("space").value.toLowerCase();
+        var swatchSize = [
+          parseInt(document.getElementById("swatchSizeW").value, 10),
+          parseInt(document.getElementById("swatchSizeH").value, 10)
+        ];
+
+        var order = [];
+        for (var i = 0; i < COLOUR_SPACES_LOOKUP[space].components.length; i++) {
+          order[i] = document.getElementById("ordering" + COLOUR_SPACES_LOOKUP[space].label + i).value;
+        }
+        
+        var levels = [];
+        for (var i = 0; i < COLOUR_SPACES_LOOKUP[space].components.length; i++) {
+          if (order[i] < 0) {
+            levels[i] = [0];
+          }
+          else {
+            var component = COLOUR_SPACES_LOOKUP[space].components[order[i]];
+            var mode = document.getElementById("mode" + component.symbol).value.toLowerCase();
+            var levelCount;
+            switch (mode) {
+              case "bits": {
+                levelCount = Math.pow(2, parseInt(document.getElementById(mode + component.symbol).value, 10));
+              } break;
+              case "levels": {
+                levelCount = parseInt(document.getElementById(mode + component.symbol).value, 10);
+              } break;
+              default:
+            }
+            switch (mode) {
+              case "bits":
+              case "levels": {
+                var range = component.range[1] - component.range[0];
+                var step, offset;
+                var mapping = document.getElementById("mapping" + component.symbol).value.toLowerCase();
+                switch (mapping) {
+                  case "stretch": {
+                    step = levelCount > 1 ? range / (levelCount - 1) : 0;
+                    offset = component.range[0];
+                  } break;
+                  case "clipupper": {
+                    step = range / levelCount;
+                    offset = component.range[0];
+                  } break;
+                  case "cliplower": {
+                    step = range / levelCount;
+                    offset = component.range[0] + step;
+                  } break;
+                  case "centre": {
+                    step = range / levelCount;
+                    offset = component.range[0] + step / 2;
+                  } break;
+                }
+                levels[i] = [];
+                for (var j = 0; j < levelCount; j++) {
+                  levels[i][j] = offset + step * j;
+                }
+              } break;
+              case "step": {
+                var step = parseFloat(document.getElementById("step" + component.symbol).value);
+                var offset = parseFloat(document.getElementById("offset" + component.symbol).value);
+                var steps = parseInt(document.getElementById("steps" + component.symbol).value, 10);
+                levels[i] = [];
+                for (var j = 0; j < steps; j++) {
+                  levels[i][j] = offset + step * j;
+                }
+              } break;
+              case "custom": {
+                var custom = document.getElementById(mode + component.symbol).value;
+                levels[i] = custom.split(",");
+                for (var j = 0; j < levels[i].length; j++) {
+                  levels[i][j] = parseFloat(levels[i][j]);
+                }
+              } break;
+            }
+            if (document.getElementById("reverse" + component.symbol).checked) {
+              levels[i].reverse();
+            }
+          }
+        }
+        
+        // Post process
+        for (var i = 0; i < COLOUR_SPACES_LOOKUP[space].components.length; i++) {
+          if (order[i] >= 0) {
+            var component = COLOUR_SPACES_LOOKUP[space].components[order[i]];
+            var distance = component.range[1] - component.range[0];
+            var componentGain = document.getElementById("gain" + component.symbol).value;
+            var componentBias = document.getElementById("bias" + component.symbol).value;
+            for (var j = 0; j < levels[i].length; j++) {
+              levels[i][j] = gain(componentGain, bias(componentBias, (levels[i][j] - component.range[0]) / distance)) * distance + component.range[0];
+            }
+          }
+        }
+
+        var wrap = parseInt(document.getElementById("wrap").value, 10);
+        if (wrap < 0) {
+          wrap = Math.ceil(Math.sqrt(levels[levels.length - 1].length));
+        }
+        
+        // Build palette
+        var palette = [];
+        var pos = [];
+        for (var i = 0; i < levels.length; i++) {
+          pos[i] = 0;
+        }
+        var PALETTE_MAX = 65536;
+        var index = 0;
+        while (index <= PALETTE_MAX && pos[levels.length - 1] < levels[levels.length - 1].length) {
+          var colour = [];
+          for (var i = 0; i < levels.length; i++) {
+            colour[i] = 0;
+          }
+          for (var i = 0; i < levels.length; i++) {
+            if (order[i] >= 0) {
+              colour[order[i]] += levels[i][pos[i]];
+            }
+          }
+          palette[index] = COLOUR_SPACES_LOOKUP[space].func(colour);
+          for (var i = 0; i < levels.length; i++) {
+            palette[index][i] = Math.floor(palette[index][i]).clamp(0, 255);
+          }
+          
+          pos[0]++;
+          for (var i = 0; i < levels.length - 1; i++) {
+            if (pos[i] >= levels[i].length) {
+              pos[i + 1]++;
+              pos[i] = 0;
+            }
+          }
+          index++;
+        }
+        
+        var last = levels.length - 1;
+        var swatchesWide = 1;
+        for (var i = 0; i < last; i += 2) {
+          swatchesWide *= levels[i].length;
+        }
+        var swatchesHigh = 1;
+        for (var i = 1; i < last; i += 2) {
+          swatchesHigh *= levels[i].length;
+        }
+        if (wrap != 0) {
+          if (last % 2 == 0) {
+            var wrap = Math.min(wrap, levels[last].length);
+            swatchesWide *= wrap;
+            swatchesHigh *= Math.ceil(levels[last].length / wrap);
+          }
+          else {
+            var wrap = Math.min(wrap, levels[last].length);
+            swatchesHigh *= wrap;
+            swatchesWide *= Math.ceil(levels[last].length / wrap);
+          }
+        }
+        else {
+          if (last % 2 == 0) {
+            swatchesWide *= levels[last].length;
+          }
+          else {
+            swatchesHigh *= levels[last].length;
+          }
+        }
+        
+        var link;
+        link = document.getElementById("downloadGpl");
+        link.href = buildTextDataUrl(buildGplString(palette, swatchesWide));
+        link.style.display = "none";
+        link.style.display = "";
+        link = document.getElementById("downloadPal");
+        link.href = buildTextDataUrl(buildPalString(palette, swatchesWide));
+        link.style.display = "none";
+        link.style.display = "";
+        
+        // Render colour cube preview
+        queueRender(palette, levels, swatchSize, swatchesWide, swatchesHigh, wrap, COLOUR_SPACES_LOOKUP[space].func);
+        
+        setQueryString(parameters);
+      }
+      
+      function queueRender(palette, levels, swatchSize, swatchesWide, swatchesHigh, wrap, toRgbFunc) {
+        var state = {};
+        state.palette = palette;
+        state.levels = levels;
+        state.toRgbFunc = toRgbFunc;
+        state.pos = [];
+        state.wrap = wrap;
+        state.swatchSize = swatchSize;
+        for (var i = 0; i < state.levels.length; i++) {
+          state.pos[i] = 0;
+        }
+        var canvas = document.getElementById("canvas");
+        state.context = canvas.getContext("2d");
+        state.step = 0;
+        
+        var width = swatchesWide * state.swatchSize[0];
+        var height = swatchesHigh * state.swatchSize[1];
+        var largestDimension = Math.max(width, height);
+        if (largestDimension > CANVAS_SIZE_MAX) {
+          var scale = CANVAS_SIZE_MAX / largestDimension;
+          state.swatchSize[0] = state.swatchSize[0] * scale;
+          state.swatchSize[1] = state.swatchSize[1] * scale;
+          width = swatchesWide * state.swatchSize[0];
+          height = swatchesHigh * state.swatchSize[1];
+        }
+        canvas.width = width;
+        canvas.height = height;        
+
+        state.offset = [];
+        state.offset[0] = 1;
+        if (state.levels.length > 0) {
+          state.offset[1] = 1;
+        }
+        for (var i = 2; i < state.levels.length; i++) {
+          state.offset[i] = state.offset[i - 2] * state.levels[i - 2].length;
+        }
+
+        renderQueue.push(state);
+        if (renderQueue.length == 1) {
+          callAsynchronous(function () { renderStep(); });
+        }
+      }
+      
+      function renderStep() {
+        while (renderQueue.length > 1) {
+          renderQueue.shift();
+        }
+        var state = renderQueue[0];
+        var steps = 1024;
+
+        while (steps > 0) {
+          var values = [];
+          for (var i = 0; i < state.levels.length; i++) {
+            values[i] = state.levels[i][state.pos[i]];
+          }
+          var colour = state.palette[state.step];
+          state.context.fillStyle = "rgb(" + Math.floor(colour[0]).clamp(0, 255) + ", " + Math.floor(colour[1]).clamp(0, 255) + ", " + Math.floor(colour[2]).clamp(0, 255) + ")";
+          var x = 0, y = 0;
+          var last = state.levels.length - 1;
+          for (var i = 0; i < last; i += 2) {
+            x += state.pos[i] * state.offset[i];
+          }
+          for (var i = 1; i < last; i += 2) {
+            y += state.pos[i] * state.offset[i];
+          }
+          if (last % 2 == 0) {
+            if (state.wrap == 0) {
+              x += state.pos[last] * state.offset[last];
+            }
+            else {
+              x += (state.pos[last] % state.wrap) * state.offset[last];
+              var wrapOffset = last > 0 ? state.levels[last - 1].length * state.offset[last - 1] : state.offset[1];
+              y += Math.floor(state.pos[last] / state.wrap) * wrapOffset;
+            }
+          }
+          else {
+            if (state.wrap == 0) {
+              y += state.pos[last] * state.offset[last];
+            }
+            else {
+              y += (state.pos[last] % state.wrap) * state.offset[last]              
+              var wrapOffset = last > 0 ? state.levels[last - 1].length * state.offset[last - 1] : state.offset[0];
+              x += Math.floor(state.pos[last] / state.wrap) * wrapOffset;
+            }
+          }
+          state.context.fillRect(Math.floor(x * state.swatchSize[0]), Math.floor(y * state.swatchSize[1]), Math.max(1, Math.ceil(state.swatchSize[0])), Math.max(1, Math.ceil(state.swatchSize[1])));
+          state.pos[0]++;
+          for (var i = 0; i < last; i++) {
+            if (state.pos[i] >= state.levels[i].length) {
+              state.pos[i + 1]++;
+              state.pos[i] = 0;
+            }
+          }
+          steps--;
+          state.step++;
+          if (state.step >= state.palette.length || state.pos[last] >= state.levels[last].length) {
+            renderQueue.shift();
+            break;
+          }
+        }
+        
+        if (renderQueue.length > 0) {
+          callAsynchronous(function () { renderStep(); });
+        }
+        else {
+          var link = document.getElementById("downloadPng");
+          link.href = document.getElementById("canvas").toDataURL();
+          link.style.display = "none";
+          link.style.display = "";
+        }
+      }
+      
+      function main() {
+        init();
+        update();
+      }
+    </script>
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 10pt;
+        background-color: silver;
+      }
+      fieldset, hr {
+        border-color: white;
+      }
+      #left {
+        float: left;
+      }
+      #preview {
+        float: left;
+      }
+      fieldset > div {
+        display: table-row;
+      }
+      fieldset > div > * {
+        display: table-cell;
+      }
+      fieldset div > label:first-child {
+        text-align: right;
+      }
+      textarea {
+        display: inline-block;
+        vertical-align: text-top;
+      }
+      legend {
+        font-weight: bold;
+        text-align: center;
+      }
+      canvas {
+        border-width: 1px;
+        border-style: inset;
+        border-color: white;
+      }
+      * {
+        font-smooth: never;
+        -webkit-font-smoothing: none;
+      }
+      input[type="checkbox"] {
+        vertical-align: middle;
+      }
+      input[type="range"] {
+        vertical-align: middle;
+        width: 4em;
+      }
+    </style>
+  </head>
+  <datalist id="orderSugestions">
+    <option value="RGB">
+    <option value="BGR">
+  </datalist>
+  <datalist id="bitSizes">
+    <option value="1">
+    <option value="2">
+    <option value="4">
+    <option value="8">
+  </datalist>            
+  <datalist id="swatchSizes">
+    <option value="1">
+    <option value="2">
+    <option value="4">
+    <option value="8">
+    <option value="16">
+    <option value="32">
+    <option value="64">
+  </datalist>            
+  <body onload="main()">
+    <h1>Colour Cube Constructor</h1>
+    <form id="form" autocomplete="on" onsubmit="update(); return false">
+      <div id="left">
+        <fieldset id="controls">
+          <legend>Controls</legend>
+          <div>
+            <label for="space">Colour Space</label>
+            <select id="space" title="Colour space"></select>
+          </div>
+          <div>
+            <label for="ordering">Component Order</label>
+            <div id="ordering"></div>
+          </div>
+          <div><label for="swatchSize">Swatch Size</label><input id="swatchSizeW" title="Swatch width" type="number" list="swatchSizes" min="1" max="64" step="1" size="4" value="16"><input id="swatchSizeH" title="Swatch height" type="number" list="swatchSizes" min="1" max="64" step="1" size="4" value="16"></div>
+          <div><label for="wrap">Wrap</label><input id="wrap" title="Wrap highest dimension at position&#013;0 for off&#013;-1 for square" type="number" min="-1" max="256" step="1" size="4" value="-1"></div>
+          <div><input title="Reset all values" type="button" value="Reset" onclick="resetAll();"><input  title="Update preview" type="submit" value="Update"><div><label for="autoUpdate">Auto Update</label><input id="autoUpdate" title="Automatically update on change" type="checkbox" checked></div></div>
+        </fieldset>
+        <fieldset id="levels">
+          <legend>Levels</legend>
+        </fieldset>
+        <fieldset id="downloads">
+          <legend>Downloads</legend>
+          <div><a id="downloadPng" download="colourcube.png">RGBA PNG Image</a></div>
+          <div><a id="downloadGpl" download="colourcube.gpl">Gimp Palette (GPL)</a></div>
+          <div><a id="downloadPal" download="colourcube.pal">JASC Palette (PAL)</a></div>
+        </fieldset>
+      </div>
+      <fieldset id="preview">
+        <legend>Preview</legend>
+        <div><canvas id="canvas" width="0" height="0"></canvas></div>
+      </fieldset>
+    </form>
+  </body>
+</html>
